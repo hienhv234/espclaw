@@ -1,0 +1,49 @@
+# ESP-IDF build output
+build/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+
+# Managed components cache
+managed_components/
+
+# Python virtualenv
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Secrets / provisioning (never commit these)
+secrets.env
+*.key
+nvs_partition*.bin
+.current_board
+
+# Environment variables (local secrets)
+.env.local
+.env.*.local
+
+# User configuration (local only)
+sdkconfig.user
+
+node_modules/
+.env
+dist/
+.DS_Store
+
+neutron-web/node_modules/
+neutron-web/.env
+neutron-web/dist/
+neutron-web/.DS_Store

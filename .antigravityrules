@@ -1,0 +1,70 @@
+# ESPClaw Project Rules
+
+## 1. Project Overview
+ESPClaw là một dự án phức tạp tích hợp Firmware Nhúng, Web Backend và AI Pipeline. 
+Mục tiêu chính là xây dựng một AI Assistant Firmware chạy hoàn toàn bằng ngôn ngữ C trên các vi điều khiển giá rẻ ($2) như ESP32-C3/C5/S3 (có hoặc không có PSRAM). Firmware tích hợp sẵn ReAct Agent, 20 công cụ (tools) thao tác phần cứng/hệ thống và 10 kênh thông báo (channels: Serial, Telegram, MQTT, DingTalk...). 
+Đồng thời, dự án đi kèm với hệ sinh thái Web (`neutron-web` & `neutron-api`) phục vụ quản lý thiết bị, cấu hình IoT, hiển thị Knowledge Graph 3D và tự động hóa kịch bản (Lua ecosystem).
+
+## 2. Tech Stack & Architecture
+Dự án được tổ chức dưới dạng Monorepo:
+
+### 2.1. Embedded (Firmware)
+- **Framework:** ESP-IDF 5.5, FreeRTOS.
+- **Ngôn ngữ:** Pure C (Không dùng C++).
+- **Core modules:** 
+  - `main/agent/`: ReAct loop, Session, Persona.
+  - `main/channel/`: Giao tiếp đa kênh (MQTT, Telegram, Serial, Webhooks).
+  - `main/provider/`: Giao tiếp API LLMs (OpenAI, Anthropic, Ollama, Custom).
+  - `main/tool/`: 20 tools (GPIO, Memory, Cron, System, Network).
+
+### 2.2. Web / Backend (`neutron-web`)
+- **Framework:** Next.js 14 (App Router), React 18.
+- **Ngôn ngữ:** TypeScript.
+- **UI & 3D:** TailwindCSS, Three.js, react-force-graph-3d.
+- **Database & Auth:** Supabase (PostgreSQL, pgvector, Edge Functions, Row Level Security - RLS).
+- **Caching & Rate Limit:** Upstash Redis.
+- **IoT Messaging:** MQTT (HiveMQ / EMQX).
+
+## 3. Hardware Configuration & Targets
+- **Supported Chips:** ESP32-C3 (1 core, no PSRAM), ESP32-C5, ESP32-S3 (2 cores, optional PSRAM).
+- **Supported Boards:** Seeed Studio XIAO series (C3, C5, C6, S3, S3 Sense, S3 Plus) và các devkit phổ thông.
+- **Memory Modes:**
+  - `MINIMAL` (No PSRAM): Áp dụng cho C3, C5, S3 bản base. Buffer nhỏ (8KB cho LLM request), tối đa 5 lần gọi tool/vòng lặp, giới hạn lịch sử hội thoại.
+  - `FULL` (Có PSRAM): Unlock file system (LittleFS), WebSocket, cấp phát buffer lớn hơn (32KB).
+- **Hardware Notes:**
+  - Chú ý các cấu hình GPIO khi làm việc với `driver_registry` (Ví dụ: DS18B20 trên 1-Wire, BME280 trên I2C, Servo dùng PWM).
+  - S3 Sense có sẵn Camera và SD Card (cần chú ý chân SDA/SCL, ví dụ SDA=8, SCL=9).
+
+## 4. Coding Standards & Conventions
+
+### 4.1. Embedded (C / ESP-IDF)
+- **Quy tắc vàng:** Mọi thay đổi mã nguồn phải đảm bảo Biên dịch được (Compile) + Chạy được (Flash & Verify).
+- **Quản lý bộ nhớ (Rất quan trọng):** 
+  - Hạn chế tối đa sử dụng `malloc`/`free` liên tục ở các tiến trình lặp (như Telegram/MQTT polling) để tránh phân mảnh bộ nhớ (heap fragmentation). Thay vào đó, dùng mảng tĩnh (static allocation) hoặc cấp phát một lần ở vòng lặp ngoài.
+  - Kiểm tra kỹ `NULL` sau khi thao tác với JSON (`cJSON`) và bộ nhớ cấu hình.
+- **Kiến trúc VTable:** Sử dụng cấu trúc function pointers (như `channel_ops_t`, `provider_t`) để làm abstract layer cho Channels và Providers, giữ code module hóa cao nhất.
+- **Macro & Conditional Compilation:** Các tính năng yêu cầu S3 hoặc PSRAM phải được bọc trong `#if ESPCLAW_HAS_xxx` hoặc `CONFIG_SPIRAM`. Không include các file header không tồn tại.
+- **Delay & Watchdog:** Các vòng lặp nặng, xử lý mạng dài, hoặc JSON parsing bắt buộc phải chèn `vTaskDelay` để tránh Task Watchdog Timeout (TWDT).
+
+### 4.2. Web / Backend (TypeScript / Next.js)
+- **Kiểm thử đầu vào:** 100% API Route phải sử dụng `Zod` schema để validate dữ liệu đầu vào.
+- **Bảo mật:** Dữ liệu người dùng phải được phân tách bằng cột `tenant_id` và Row Level Security (RLS) của Supabase. Không code hardcode credentials, bắt buộc dùng biến môi trường.
+- **Realtime / IoT:** Xử lý kết nối MQTT bằng singleton pool (`mqtt-pool`), hỗ trợ retry với exponential backoff.
+
+## 5. Key Business Logic
+
+- **Thiết lập luồng ReAct (Embedded):** 
+  LLM trả về phản hồi theo định dạng tool call -> Parse JSON -> Gọi function tool (vd: `gpio_write`, `cron_schedule`) -> Gửi kết quả lại cho LLM hoặc xuất ra Channel.
+- **Luồng ghép nối thiết bị (Device Pairing Flow):**
+  1. User nhập Device ID trên Web -> Web gọi Backend.
+  2. Backend sinh 6 số OTP -> Lưu DB -> Bắn MQTT topic `espclaw/{id}/otp`.
+  3. ESP32 nhận MQTT -> Hiển thị OTP lên màn hình OLED.
+  4. User nhập OTP vào Web -> Xác thực -> Bắn MQTT `login_success`.
+  5. ESP32 lưu `tenant_id` vào NVS, bật giao diện Ready và bắt đầu đồng bộ (NeuronLink sync).
+- **Quản lý giới hạn (Rate Limiting):**
+  API gọi LLM trên firmware giới hạn 100 lần/giờ, 1000 lần/ngày được lưu trên NVS. Phía API backend chặn request spam bằng Upstash Redis.
+
+## 6. Special Instructions
+- **NVS (Non-Volatile Storage):** Khi thay đổi cấu hình Board, SSID, hoặc Tenant, ESP32 có thể bị lưu cấu hình cũ gây ra lỗi khởi động, bootloop hoặc treo WiFi. Hãy đề xuất `idf.py erase-flash` nếu nghi ngờ lỗi NVS.
+- **Flash Size:** ESP32-S3 có phiên bản 4MB, 8MB, 16MB. Khi cập nhật phân vùng (partitions.csv), luôn chắc chắn nó khớp với target trong `sdkconfig`.
+- **Tối giản Output:** Khi LLM hoặc backend trả lỗi, hãy bắt exception graceful, không crash toàn bộ chương trình phần cứng. Bọc kỹ các hàm xử lý chuỗi (string manipulation) vì C rất dễ dính tràn bộ đệm (Buffer Overflow).
